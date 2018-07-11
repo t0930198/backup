@@ -4,9 +4,10 @@ from resnet import softmax_layer, conv_layer, residual_block
 import pickle
 import numpy as np
 import tensorflow as tf
+import requests
 import os
-import time
-
+from flask import Flask
+from flask import request
 classes = [
     'apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle', 
     'bicycle', 'bottle', 'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel', 
@@ -43,7 +44,7 @@ def one_hot_vec(size):
         return vec
     return _one_hot
 
-def load_data(isCar = False):
+def load_data():
     x_all = []
     y_all = []
     z_all = []
@@ -72,42 +73,29 @@ def load_data(isCar = False):
     pixel_mean = np.mean(x[0:50000],axis=0)
     x -= pixel_mean
 
-    y2 = map(one_hot_vec(20), y)
-    z2 = map(one_hot_vec(100), z)
-    y2 = (list(y2))
-    z2 = (list(z2))
+    y = map(one_hot_vec(20), y)
+    z = map(one_hot_vec(100), z)
+    y = (list(y))
+    z = (list(z))
     X_train = x[0:50000,:,:,:]
-    Y_train = y2[0:50000]
-    Z_train = z2[0:50000]
+    Y_train = y[0:50000]
+    Z_train = z[0:50000]
     X_test = x[50000:,:,:,:]
-    Y_test = y2[50000:]
-    Z_test = z2[50000:]
+    Y_test = y[50000:]
+    Z_test = z[50000:]
     
-    ## isCar
-    if isCar:
-        cars_train = list(filter(lambda x: y[x] > 17, range(0,50000)))
-        cars_test = list(filter(lambda x: y[x] > 17, range(50000,60000)))
-        cars_test = np.array(cars_test)-50000
-        X_train = X_train[cars_train]
-        Y_train = np.array(Y_train)
-        Y_train = Y_train[cars_train]
-        X_test = X_test[cars_test]
-        Y_test = np.array(Y_test)
-        Y_test = Y_test[cars_test]
-    print(len(X_train))
-    print(X_train.shape)
     return (X_train, Y_train, Z_train, X_test, Y_test, Z_test)
 
 
 
 flags = tf.app.flags
 FLAGS = flags.FLAGS
-flags.DEFINE_float('learning_rate', 0.001, 'Learning rate')
-flags.DEFINE_integer('batch_size', 250, 'Batch size')
+flags.DEFINE_float('learning_rate', 0.01, 'Learning rate')
+flags.DEFINE_integer('batch_size', 25, 'Batch size')
 
 X_train, Y_train, Z_train, X_test, Y_test, Z_test = load_data()
-batch_size = 128
-# print(Z_test[0].tolist().index(1))
+batch_size = 500
+
 X = tf.placeholder("float", [None, 32, 32, 3])
 Y = tf.placeholder("float", [None, 20])
 Z = tf.placeholder("float", [None, 100])
@@ -118,8 +106,7 @@ learning_rate = tf.placeholder("float", [])
 
 
 n_dict = {20:1, 32:2, 44:3, 56:4}
-# ResNet architectures
-# ResNet Models
+# ResNet architectures used for CIFAR-10
 def resnet(inpt, n):
     if n < 20 or (n - 20) % 12 != 0:
         print("ResNet depth invalid.")
@@ -131,7 +118,7 @@ def resnet(inpt, n):
     with tf.variable_scope('conv1'):
         conv1 = conv_layer(inpt, [3, 3, 3, 16], 1)
         layers.append(conv1)
-#     tf.summary.image("conv1", conv1, max_outputs=6)
+
     for i in range (num_conv):
         with tf.variable_scope('conv2_%d' % (i+1)):
             conv2_x = residual_block(layers[-1], 16, False)
@@ -140,7 +127,7 @@ def resnet(inpt, n):
             layers.append(conv2)
 
         assert conv2.get_shape().as_list()[1:] == [32, 32, 16]
-#     tf.summary.image("conv2", conv2, max_outputs=6)
+
     for i in range (num_conv):
         down_sample = True if i == 0 else False
         with tf.variable_scope('conv3_%d' % (i+1)):
@@ -150,7 +137,7 @@ def resnet(inpt, n):
             layers.append(conv3)
 
         assert conv3.get_shape().as_list()[1:] == [16, 16, 32]
-#     tf.summary.image("conv3", conv3, max_outputs=6)
+    
     for i in range (num_conv):
         down_sample = True if i == 0 else False
         with tf.variable_scope('conv4_%d' % (i+1)):
@@ -160,7 +147,7 @@ def resnet(inpt, n):
             layers.append(conv4)
 
         assert conv4.get_shape().as_list()[1:] == [8, 8, 64]
-    
+
     with tf.variable_scope('fc'):
         to_fc = tf.cond(tf.equal(seperate, tf.constant(False)), lambda: layers[-1], lambda: data)
         global_pool = tf.reduce_mean(to_fc, [1, 2])
@@ -174,84 +161,84 @@ def resnet(inpt, n):
     return layers[-1], layers[-2]
 
 
-depth = 32
-tf.summary.image("source", X, max_outputs=6)
-net, before_flat = resnet(X, depth)
-# net, before_flat = resnet(X, 32)
-# net, before_flat = resnet(X, 44)
-# net, before_flat = resnet(X, 56)
+# ResNet Models
+net, before_flat = resnet(X, 20)
+# net = models.resnet(X, 32)
+# net = models.resnet(X, 44)
+# net = models.resnet(X, 56)
 
-# cross_entropy = -tf.reduce_sum(Y*tf.log(net))
-# cross_entropy2 = -tf.reduce_sum(Z*tf.log(net))
+cross_entropy = -tf.reduce_sum(Y*tf.log(net))
+cross_entropy2 = -tf.reduce_sum(Z*tf.log(net))
 
 opt = tf.train.MomentumOptimizer(learning_rate, 0.9)
+
 # ## middleware
-train_op = tf.cond(tf.equal(seperate, tf.constant(False)), lambda: opt.minimize(-tf.reduce_sum(Y*tf.log(net))), lambda: opt.minimize(-tf.reduce_sum(Z*tf.log(net))))
-tf.summary.scalar("cross entropy", -tf.reduce_sum(Y*tf.log(net)))
+train_op = tf.cond(tf.equal(seperate, tf.constant(False)), lambda: opt.minimize(cross_entropy), lambda: opt.minimize(cross_entropy2))
+
 # train_op = opt.minimize(cross_entropy)
 
 sess = tf.Session()
 sess.run(tf.global_variables_initializer())
 
 score = tf.argmax(net, 1)
-with tf.name_scope('accuracy'):
-    correct_prediction = tf.cond(tf.equal(seperate, tf.constant(False)), lambda: tf.equal(score, tf.argmax(Y, 1)), lambda: tf.equal(score, tf.argmax(Z, 1)))
+correct_prediction = tf.cond(tf.equal(seperate, tf.constant(False)), lambda: tf.equal(score, tf.argmax(Y, 1)), lambda: tf.equal(score, tf.argmax(Z, 1)))
 # correct_prediction = tf.equal(tf.argmax(net, 1), tf.argmax(Y, 1))
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-    tf.summary.scalar("accuracy", accuracy)
+accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
 
-merged = tf.summary.merge_all()
-writer = tf.summary.FileWriter("log/"+str(int(time.time())), graph = sess.graph)
 saver = tf.train.Saver()
-checkpoint = tf.train.latest_checkpoint("./tmp/model/")
 # saver.restore(sess, os.getcwd()+"/tmp/model/model.ckpt")
-if checkpoint and False:
-    print("Restoring from checkpoint", checkpoint)
-    saver.restore(sess, checkpoint)
-    flat, ans, acc = sess.run([before_flat, score, accuracy],feed_dict={
-        X: X_test[0:10000],
-        Y: Y_test[0:10000],
-        Z: Z_test[0:10000],
-        seperate: False
-    })
+saver.restore(sess, "./tmp/model/model.ckpt")
+# flat, ans, acc = sess.run([before_flat, score, accuracy],feed_dict={
+#     X: X_test[0:1],
+#     Y: Y_test[0:1],
+#     Z: Z_test[0:1],
+#     seperate: False
+# })
 
-    print(acc)
-else:
-    print("Couldn't find checkpoint to restore from. Starting over.")
-    epoch = 30
-    for j in range (epoch):
-        for i in range (0, len(X_train), batch_size):
-            rate = 0.1
-            if j*len(X_train)+(i/batch_size) < 40000:
-                rate = 0.1
-            elif j*len(X_train)+(i/batch_size) < 60000:
-                rate = 0.01
-            elif j*len(X_train)+(i/batch_size) < 80000:
-                rate = 0.001
-            else:
-                rate = 0.0001
-            end = i+batch_size
-            if end > len(X_train):
-                end = len(X_train)
-            feed_dict={
-                X: X_train[i:end], 
-                Y: Y_train[i:end],
-                Z: Z_train[i:end],
-                seperate: False,
-                learning_rate: rate
-            }
-            sess.run([train_op], feed_dict=feed_dict)
-            if i % (len(X_train)/10) == 0:
-                print("training on image #%d in epoch %d" % (i, j))
-        feed_dict = {
-            X: X_test[0:10000],
-            Y: Y_test[0:10000],
-            Z: Z_test[0:10000],
+# print(acc)
+# flat = np.reshape(flat,(-1))
+# print(flat.shape)
+# r = requests.post('http://localhost:8080', flat = flat.tostring())
+
+# else:
+#     print("Couldn't find checkpoint to restore from. Starting over.")
+#     for j in range (10):
+#         for i in range (0, 50000, batch_size):
+#             feed_dict={
+#                 X: X_train[i:i + batch_size], 
+#                 Y: Y_train[i:i + batch_size],
+#                 Z: Z_train[i:i + batch_size],
+#                 seperate: False,
+#                 learning_rate: 0.001}
+#             sess.run([train_op], feed_dict=feed_dict)
+#             if i % 500 == 0:
+#                 print("training on image #%d" % i)
+#         saver.save(sess, os.getcwd()+"/tmp/model/model.ckpt")
+
+# sess.close()
+app = Flask(__name__)
+
+@app.route("/", methods=['GET', 'POST'])
+def test():
+    if request.method == 'POST':
+        received = request.data
+        received = np.fromstring(received, dtype=np.uint64)
+        received = np.reshape(received, (1,32,32,3))
+        flat, ans, acc = sess.run([before_flat, score, accuracy],feed_dict={
+            X: received,
+            Y: Y_test[0:1],
+            Z: Z_test[0:1],
             seperate: False
-        }
-        result = sess.run(merged, feed_dict)
-        writer.add_summary(result, j+1)
-    saver.save(sess, os.getcwd()+"/tmp/model/model"+str(depth)+".ckpt")
+        })
+        flat = np.reshape(flat,(-1))
+        r = requests.post('http://localhost:8080', data = flat.tostring())
+        ans = ans.tolist()
+#         print("ans is: ", super_classes[Y_test[index].tolist().index(1)] )
+        print("return is: ", super_classes[ans[0]])
+        return "Superclass: "+super_classes[ans[0]]+"\nClass: "+r.text+"\n"+str(super_classes[Y_test[0].tolist().index(1)])
+#         return "Hello World!"
+    else:
+        return "Hello World!"
 
-sess.close()
-
+if __name__ == "__main__":
+    app.run(debug=True,port=8081)

@@ -5,12 +5,12 @@ n_dict = {20:1, 32:2, 44:3, 56:4}
 # ResNet architectures used for CIFAR-10
 def resnet(inpt, n):
     if n < 20 or (n - 20) % 12 != 0:
-        print "ResNet depth invalid."
+        print("ResNet depth invalid.")
         return
 
-    num_conv = (n - 20) / 12 + 1
+    num_conv = int((n - 20) / 12 + 1)
     layers = []
-
+    print(num_conv)
     with tf.variable_scope('conv1'):
         conv1 = conv_layer(inpt, [3, 3, 3, 16], 1)
         layers.append(conv1)
